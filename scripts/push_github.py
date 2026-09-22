@@ -52,6 +52,21 @@ def ensure_helper() -> Path:
     return ASKPASS_CMD
 
 
+def _run(command: list[str], env: dict) -> tuple[int, str]:
+    result = subprocess.run(
+        command, cwd=str(ROOT), env=env, text=True,
+        capture_output=True, encoding="utf-8", errors="replace",
+    )
+    output = (result.stdout or "") + (result.stderr or "")
+    print(output.rstrip())
+    return result.returncode, output
+
+
+#: Messages that mean the transport failed rather than the push being rejected.
+_TRANSPORT_FAILURES = ("SSL_ERROR", "SSL routines", "unable to access", "Connection reset",
+                       "GnuTLS", "Send failure", "HTTP/2", "unexpected EOF")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Push to GitHub with the stored credential")
     parser.add_argument("--remote", default="origin")
@@ -65,15 +80,20 @@ def main() -> int:
     env["GIT_ASKPASS_REQUIRE"] = "force"
     env["GIT_TERMINAL_PROMPT"] = "0"
 
-    command = ["git", "-c", "credential.helper="]
-    if args.branch:
-        command += ["push", args.remote, args.branch]
-    else:
-        command += ["push", args.remote, "HEAD"]
+    target = [args.remote, args.branch] if args.branch else [args.remote, "HEAD"]
+    command = ["git", "-c", "credential.helper=", "push", *target]
 
     print(f"$ {' '.join(command)}")
-    result = subprocess.run(command, cwd=str(ROOT), env=env, text=True)
-    return result.returncode
+    code, output = _run(command, env)
+    if code == 0 or not any(marker.lower() in output.lower() for marker in _TRANSPORT_FAILURES):
+        return code
+
+    # Some HTTP proxies drop HTTP/2 connections mid-handshake ("SSL_ERROR_SYSCALL")
+    # while HTTP/1.1 through the same proxy is fine, so retry once on the older
+    # protocol instead of leaving a retryable network flake looking like a failure.
+    retry = ["git", "-c", "credential.helper=", "-c", "http.version=HTTP/1.1", "push", *target]
+    print(f"\ntransport failed; retrying over HTTP/1.1\n$ {' '.join(retry)}")
+    return _run(retry, env)[0]
 
 
 if __name__ == "__main__":

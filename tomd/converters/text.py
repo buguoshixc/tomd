@@ -298,17 +298,47 @@ def convert_yaml_raw(path: Path, options: dict) -> Document:
     return doc
 
 
+def _toml_parser():
+    """The best available TOML reader, or ``None``.
+
+    ``tomllib`` is stdlib from Python 3.11; on 3.10 the ``tomli`` backport is
+    used when it is installed.  Returning ``None`` rather than raising keeps the
+    "missing dependency degrades, it does not explode" rule, and the caller
+    turns it into a warning instead of silence.
+    """
+    try:
+        import tomllib
+
+        return tomllib
+    except ImportError:
+        pass
+    try:
+        import tomli  # type: ignore[import-not-found]
+
+        return tomli
+    except ImportError:
+        return None
+
+
 @registry.converter("toml", "config-toml", priority=10,
                     description="TOML with section headings")
 def convert_toml(path: Path, options: dict) -> Document:
     doc = Document()
     read = md.read_text(path)
-    try:
-        import tomllib  # Python 3.11+
-
-        data = tomllib.loads(read.text)
-    except Exception:
-        data = None
+    parser = _toml_parser()
+    data = None
+    if parser is None:
+        doc.warn(
+            "no-toml-parser",
+            "no TOML parser is available (tomllib needs Python 3.11+, tomli is "
+            "not installed); emitted the raw file instead",
+            "info",
+        )
+    else:
+        try:
+            data = parser.loads(read.text)
+        except Exception as exc:  # noqa: BLE001
+            doc.warn("toml-parse-failed", f"could not parse TOML ({exc}); emitting raw text")
 
     if not isinstance(data, dict):
         doc.add(md.fence(read.text, "toml"))

@@ -64,7 +64,10 @@ pip install -e ".[dev]"             # + pytest
 ```
 
 Every optional package is genuinely optional. `tomd --formats` shows which
-engines are available and which fallback is being used instead.
+engines are available and which fallback is being used instead. Where a missing
+package would cost structure rather than fail — YAML without PyYAML, TOML on
+Python 3.10 without `tomli` — the file is still emitted in full and the report
+says exactly what was lost.
 
 ## Use
 

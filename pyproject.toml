@@ -42,6 +42,8 @@ recommended = [
     "charset-normalizer>=3.3",
     "PyYAML>=6.0",
     "Pillow>=10.0",
+    # tomllib only exists from 3.11; on 3.10 this is what keeps .toml structured.
+    "tomli>=2.0; python_version < '3.11'",
 ]
 full = [
     "tomd[recommended]",

@@ -224,12 +224,45 @@ class TestConfigFormats:
 
     def test_toml_keys_are_tabulated(self, tmp_path, outdir):
         from tomd import ConvertOptions, convert, render
+        from tomd.converters.text import _toml_parser
+
+        if _toml_parser() is None:
+            pytest.skip("no TOML parser on this interpreter (tomllib needs 3.11+)")
 
         path = tmp_path / "a.toml"
         path.write_text('[db]\nhost = "x"\nport = 1\n', encoding="utf-8")
         text = render(convert(path, ConvertOptions(output_dir=outdir)))
         assert "## db" in text
         assert "| host | x |" in text
+
+    def test_toml_without_a_parser_degrades_and_says_so(self, tmp_path, outdir, monkeypatch):
+        """Python 3.10 without the tomli backport must not lose the file."""
+        from tomd import ConvertOptions, convert, render
+        from tomd.converters import text as text_converter
+
+        monkeypatch.setattr(text_converter, "_toml_parser", lambda: None)
+        path = tmp_path / "a.toml"
+        path.write_text('[db]\nhost = "x"\nport = 1\n', encoding="utf-8")
+        result = convert(path, ConvertOptions(output_dir=outdir))
+        assert "```toml" in render(result)
+        assert '[db]' in render(result)
+        # Informational, exactly like the PyYAML-less path: the file is intact,
+        # only its structure is missing, and the report says which.
+        assert any(w.code == "no-toml-parser" for w in result.warnings)
+        assert result.status.value in ("ok", "partial")
+
+    def test_broken_toml_falls_back_to_the_raw_file(self, tmp_path, outdir, monkeypatch):
+        from tomd import ConvertOptions, convert, render
+        from tomd.converters import text as text_converter
+
+        if text_converter._toml_parser() is None:
+            pytest.skip("no TOML parser on this interpreter (tomllib needs 3.11+)")
+
+        path = tmp_path / "a.toml"
+        path.write_text("not = = toml\n", encoding="utf-8")
+        result = convert(path, ConvertOptions(output_dir=outdir))
+        assert "not = = toml" in render(result)
+        assert any(w.code == "toml-parse-failed" for w in result.warnings)
 
     def test_yaml_without_pyyaml_falls_back_and_says_so(self, tmp_path, outdir):
         from tomd import ConvertOptions, convert, render
