@@ -1,0 +1,83 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tomd"
+version = "0.1.0"
+description = "Convert many file formats to Markdown, with an honest conversion report"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["markdown", "converter", "pdf", "docx", "llm", "rag", "document"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Text Processing :: Markup :: Markdown",
+]
+
+# The core has NO mandatory dependencies on purpose: it runs on a bare Python
+# install using only the standard library, and upgrades itself as optional
+# packages appear.  See the `full` extra for the recommended set.
+dependencies = []
+
+[project.optional-dependencies]
+# Everything needed for high-fidelity conversion of the common formats.
+recommended = [
+    "PyMuPDF>=1.24",       # PDF text layer, tables, images
+    "python-docx>=1.1",    # Word
+    "python-pptx>=0.6.23", # PowerPoint (notes, tables, images)
+    "openpyxl>=3.1",       # Excel (types, dates, formulas)
+    "markdownify>=0.12",   # better HTML -> markdown
+    "beautifulsoup4>=4.12",
+    "charset-normalizer>=3.3",
+    "PyYAML>=6.0",
+    "Pillow>=10.0",
+]
+full = [
+    "tomd[recommended]",
+    "lxml>=5.0",
+    "pypdf>=4.0",          # PDF fallback when PyMuPDF is absent
+    "ebooklib>=0.18",
+    "striprtf>=0.0.26",
+    "chardet>=5.0",
+]
+server = [
+    "tomd[recommended]",
+]
+dev = [
+    "tomd[full]",
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+
+[project.scripts]
+tomd = "tomd.cli:main"
+
+[project.urls]
+Homepage = "https://example.invalid/tomd"
+
+[tool.setuptools]
+packages = ["tomd", "tomd.converters"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -p no:cacheprovider: the .pytest_cache directory cannot be created reliably on
+# synced/OneDrive-backed checkouts, and a cache warning should not look like a
+# test failure.
+addopts = "-q -p no:cacheprovider"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501", "SIM108"]
