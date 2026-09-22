@@ -1,6 +1,7 @@
 # Byte-compiled / cache
 __pycache__/
 *.py[cod]
+.pyc-check
 *.egg-info/
 build/
 dist/

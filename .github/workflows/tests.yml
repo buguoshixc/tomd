@@ -1,0 +1,78 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The core has no mandatory dependencies, so it must work on a bare
+          # interpreter.  This job proves that claim rather than asserting it.
+          - os: ubuntu-latest
+            python: "3.10"
+            extras: ""
+          - os: ubuntu-latest
+            python: "3.12"
+            extras: ".[recommended]"
+          # Windows is the platform the project is developed on, and the one
+          # where path handling and console encoding actually bite.
+          - os: windows-latest
+            python: "3.12"
+            extras: ".[recommended]"
+          - os: macos-latest
+            python: "3.13"
+            extras: ".[recommended]"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ -n "${{ matrix.extras }}" ]; then
+            pip install -e "${{ matrix.extras }}" pytest
+          else
+            pip install pytest
+          fi
+          pip install -e . --no-deps
+
+      - name: Show which engines are available
+        run: python -m tomd --formats
+
+      - name: Generate the test corpus
+        run: python scripts/make_fixtures.py --force
+
+      - name: Run tests
+        run: python -m pytest -q
+
+  compile:
+    name: compile all sources
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Deliberately dependency-free: it only uses the standard library, so it
+      # runs identically on every interpreter in the matrix and cannot rot.
+      # It catches the failure that matters most for a converter -- a module
+      # that raises on import, which would take a whole format family with it.
+      - name: Compile and import every module
+        run: python scripts/check_sources.py
