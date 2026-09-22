@@ -88,7 +88,8 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     doc.add_argument("--page-markers", action="store_true",
                      help="use <!-- page N --> markers instead of <details> blocks in PDF output")
     doc.add_argument("--html-engine", choices=["auto", "markdownify", "builtin"], default="auto",
-                     help="HTML renderer to use (default: auto)")
+                     help="HTML renderer: auto and builtin use the built-in one, "
+                          "markdownify opts into the third-party engine (default: auto)")
 
     limits = parser.add_argument_group("limits and detection")
     limits.add_argument("--format", dest="force_format", metavar="KEY",

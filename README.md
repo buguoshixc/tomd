@@ -76,9 +76,15 @@ tomd ./docs --out ./out --workers 8  # ... in parallel
 tomd paper.pdf --stdout --no-report --no-front-matter   # clean output for an LLM
 tomd data.csv --csv-max-rows 500     # force a big CSV into a real table
 tomd mystery.dat --format text       # override format detection
+tomd page.html --html-engine markdownify   # opt into the third-party renderer
 tomd --formats                       # what is supported, and by what
 tomd --server                        # local web UI on http://127.0.0.1:8765
 ```
+
+HTML has two renderers. The built-in one is the default (`auto` and `builtin`
+both mean it) because it is always available and because output should not
+change depending on what happens to be installed; `markdownify` is an explicit
+opt-in for its wider tag coverage.
 
 Exit codes: `0` clean, `1` completed with warnings or failures, `2` usage error.
 That makes `tomd ./docs --out ./out || echo "check the report"` a usable gate.
@@ -106,7 +112,7 @@ convert("report.pdf", ConvertOptions(output_dir="out"), write=True)
 | Markdown | `md` `markdown` `mdx` | Front matter lifted into metadata, outline reported |
 | Source code | ~50 extensions | Fenced with language + a symbol outline |
 | Data | `csv` `tsv` `json` `jsonl` `xml` `yaml` `toml` `ini` `env` `diff` | Tables when readable, fenced source when not; shape summary always |
-| Web | `html` `htm` `xhtml` `svg` | Built-in renderer or markdownify; chrome/content decided by content |
+| Web | `html` `htm` `xhtml` `svg` | Built-in renderer by default, markdownify on request; chrome/content decided by content |
 | Word | `docx` `docm` `dotx` | Headings, lists, tables, images, core properties |
 | PowerPoint | `pptx` `ppsx` | Slide titles, bullets, tables, speaker notes, images |
 | Excel | `xlsx` `xlsm` | Per-sheet tables, dates and types preserved |

@@ -95,8 +95,12 @@ class TestSingleFile:
     def test_missing_file_returns_usage_error(self, tmp_path, capsys):
         assert main([str(tmp_path / "nope.txt")]) == 2
 
-    def test_scanned_pdf_returns_nonzero(self, fixture, capsys):
-        assert main([str(fixture("scanned.pdf")), "--no-report"]) == 1
+    def test_scanned_pdf_returns_nonzero(self, fixture, tmp_path, capsys):
+        # Copied into tmp_path first: with no -o the default output lands next to
+        # the source, and a test must not write into the fixtures directory.
+        source = tmp_path / "scanned.pdf"
+        source.write_bytes(fixture("scanned.pdf").read_bytes())
+        assert main([str(source), "--no-report"]) == 1
 
     def test_no_report_flag_removes_report(self, fixture, tmp_path):
         target = tmp_path / "a.md"
@@ -180,11 +184,13 @@ class TestBatch:
 class TestServer:
     @pytest.fixture()
     def server(self):
-        from tomd.server import Handler, free_port
+        from tomd.server import Handler
 
-        port = free_port(18100)
-        httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        # Port 0: let the OS pick a free port.  Probing a fixed range races with
+        # anything else on the machine and produces flaky "RemoteDisconnected".
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         httpd.daemon_threads = True
+        port = httpd.server_address[1]
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
         try:

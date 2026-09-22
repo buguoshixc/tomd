@@ -71,9 +71,14 @@ tomd ./docs --out ./out --workers 8  # ……并行转换
 tomd paper.pdf --stdout --no-report --no-front-matter   # 喂给 LLM 的干净输出
 tomd data.csv --csv-max-rows 500     # 强制把大 CSV 渲染成真正的表格
 tomd mystery.dat --format text       # 覆盖格式识别结果
+tomd page.html --html-engine markdownify   # 显式改用第三方渲染器
 tomd --formats                       # 支持哪些格式、分别由谁负责
 tomd --server                        # 本地 Web 界面 http://127.0.0.1:8765
 ```
+
+HTML 有两套渲染器。默认（`auto` 与 `builtin` 同义）走**内置渲染器**：它永远可用，
+而且输出不应该因为环境里恰好装了什么包而变化；`markdownify` 需要显式开启，
+用来换取它更广的标签覆盖。
 
 **退出码**：`0` 干净 / `1` 完成但有警告或失败 / `2` 用法错误。
 所以 `tomd ./docs --out ./out || echo "去看报告"` 可以直接当门禁使用。
@@ -103,7 +108,7 @@ convert("report.pdf", ConvertOptions(output_dir="out"), write=True)
 | Markdown | `md` `markdown` `mdx` | front matter 提取进元数据，并统计大纲 |
 | 源代码 | 约 50 种扩展名 | 带语言的代码围栏 + 符号大纲 |
 | 结构化数据 | `csv` `tsv` `json` `jsonl` `xml` `yaml` `toml` `ini` `env` `diff` | 可读时给表格，超限时给代码围栏；始终附数据形状摘要 |
-| 网页 | `html` `htm` `xhtml` `svg` | 内置渲染器或 markdownify；**按内容**判定正文与页面外壳 |
+| 网页 | `html` `htm` `xhtml` `svg` | 默认内置渲染器，可切 markdownify；**按内容**判定正文与页面外壳 |
 | Word | `docx` `docm` `dotx` | 标题、列表、表格、图片、文档属性 |
 | PowerPoint | `pptx` `ppsx` | 幻灯片标题、项目符号、表格、备注、图片 |
 | Excel | `xlsx` `xlsm` | 逐工作表转表格，日期与类型保留 |

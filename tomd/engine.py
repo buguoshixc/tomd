@@ -133,6 +133,8 @@ class ConvertOptions:
     keep_links: bool = True
     keep_images: bool = True
     drop_chrome: bool = True
+    # ``auto`` is the built-in renderer, not "whichever is installed": output
+    # must not depend on the environment.  Pass "markdownify" to opt in.
     html_engine: str = "auto"
 
     # --- format-specific

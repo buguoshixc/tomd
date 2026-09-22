@@ -1,13 +1,18 @@
 """HTML-family converters: ``html`` and ``svg``.
 
-Two engines, chosen automatically:
+Two engines:
 
-* ``markdownify`` / ``html2text`` when installed (better edge-case coverage),
-* a built-in :class:`html.parser.HTMLParser` renderer otherwise.
+* the built-in :class:`html.parser.HTMLParser` renderer -- the default, and the
+  only one ``auto`` ever picks;
+* ``markdownify``, opted into explicitly with ``--html-engine markdownify``.
 
-The built-in one exists so that the tool is useful on a machine with nothing
-installed -- and because a bounded, auditable renderer is easier to reason about
-than a general-purpose HTML-to-markdown library when the input is untrusted.
+The built-in one is the default because it is always available, because a
+bounded auditable renderer is easier to reason about than a general-purpose
+library when the input is untrusted, and because output should not silently
+change depending on what happens to be installed in the environment.  The
+third-party engine is still offered for its broader tag coverage; when it is
+used, the chrome decision and fence languages the built-in renderer handles for
+free are restored around it.
 
 Both engines strip navigation/chrome, keep heading structure (this is the part
 naive converters get wrong: no ``#`` means no outline for downstream chunking),
@@ -45,6 +50,12 @@ VOID_TAGS = {"br", "hr", "img", "input", "meta", "link", "source", "track", "wbr
 #: Unlinked chrome text shorter than this is treated as decoration (a logo
 #: caption, a copyright strip) rather than content worth keeping.
 CHROME_SHORT_TEXT = 24
+
+#: Placeholder for ``<br>``.  Markdown's hard break is "two spaces then a
+#: newline", but the surrounding line is whitespace-normalised before output,
+#: which would strip those spaces.  The sentinel contains characters that cannot
+#: arise from HTML entity decoding, so it cannot collide with real content.
+HARD_BREAK = "\x00\x01br\x01\x00"
 
 
 def _clean_ws(text: str) -> str:
@@ -146,9 +157,116 @@ class _ChromeScanner(HTMLParser):
         # No prose at all: a menu bar, a logo, a breadcrumb trail.
         return False
 
+
+class _ChromeFilter(HTMLParser):
+    """Re-emit HTML with content-free page chrome removed, the rest untouched.
+
+    The built-in renderer decides chrome-vs-content while it renders; the
+    opt-in markdownify engine cannot, so the same policy
+    (:meth:`_ChromeScanner._worth_keeping`) is applied here, on the raw markup,
+    before markdownify sees it.  Everything that is *not* chrome is re-emitted
+    byte-for-byte -- start tags keep their original spelling via
+    :meth:`~html.parser.HTMLParser.get_starttag_text`, and ``convert_charrefs``
+    stays off so entities survive -- because the point is to hand markdownify a
+    document it can parse, not a re-serialised approximation of one.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self._out: list[str] = []
+        # One buffer per open chrome element; edits land in the innermost one so
+        # a dropped element takes its whole subtree with it.
+        self._bufs: list[list[str]] = [self._out]
+        self._frames: list[list] = []
+        self._anchor_depth = 0
+
+    def _emit(self, text: str) -> None:
+        self._bufs[-1].append(text)
+
+    def handle_starttag(self, tag: str, attrs) -> None:  # noqa: ANN001, ARG002
+        raw = self.get_starttag_text() or f"<{tag}>"
+        if tag in DROP_TAG_KEEP_TEXT and not self._frames:
+            # A <nav> inside a <header> is part of the header's decision, not a
+            # second one -- same rule as the scanner's outermost-only counting.
+            self._bufs.append([])
+            self._frames.append([0, tag, False, 0, 0])
+            return
+        if self._frames:
+            frame = self._frames[-1]
+            if tag in HEADINGS:
+                frame[2] = True
+                if tag != "h1":
+                    # An <h3> inside a nav is a menu group label: it counts as a
+                    # hint of prose, not as the mark of a document header.
+                    frame[3] += 1
+            elif tag == "a":
+                self._anchor_depth += 1
+                frame[4] += 1
+        self._emit(raw)
+
     def handle_startendtag(self, tag: str, attrs) -> None:  # noqa: ANN001, ARG002
-        """``<img/>`` and friends: HTMLParser does not route these to starttag."""
-        self.handle_starttag(tag, attrs)
+        """Self-closing tags are emitted verbatim; none of them is chrome."""
+        self._emit(self.get_starttag_text() or f"<{tag}/>")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a":
+            self._anchor_depth = max(0, self._anchor_depth - 1)
+        elif self._frames and tag == self._frames[-1][1]:
+            frame = self._frames.pop()
+            content = self._bufs.pop()
+            if _ChromeScanner._worth_keeping(frame):
+                self._bufs[-1].extend(content)
+                self._emit(f"</{tag}>")
+            return
+        self._emit(f"</{tag}>")
+
+    def handle_data(self, data: str) -> None:
+        if not self._frames:
+            self._emit(data)
+            return
+        frame = self._frames[-1]
+        text = _clean_ws(data).strip()
+        if text:
+            # Same scoring as the scanner, including the link-label weighting.
+            if self._anchor_depth:
+                frame[4] += max(1, len(text) // 8)
+            else:
+                frame[3] += len(text)
+        self._emit(data)
+
+    def handle_entityref(self, name: str) -> None:
+        """``HTMLParser`` drops references when ``convert_charrefs`` is off.
+
+        The default handler is a no-op, so entities have to be written back out
+        by hand -- otherwise ``&amp;`` silently disappears from the document.
+        """
+        self.handle_data(f"&{name};")
+
+    def handle_charref(self, name: str) -> None:
+        self.handle_data(f"&#{name};")
+
+    def handle_comment(self, data: str) -> None:
+        self._emit(f"<!--{data}-->")
+
+    def handle_decl(self, decl: str) -> None:
+        self._emit(f"<!{decl}>")
+
+    def handle_pi(self, data: str) -> None:
+        self._emit(f"<?{data}>")
+
+    def unknown_decl(self, data: str) -> None:
+        self._emit(f"<![{data}]>")
+
+    def close(self) -> None:  # noqa: D102
+        super().close()
+        # Chrome left open at EOF cannot be judged; keep it, because dropping
+        # the remainder of a malformed document is far worse than a stray banner.
+        while self._frames:
+            self._frames.pop()
+            self._bufs[-2].extend(self._bufs.pop())
+
+    def result(self) -> str:
+        return "".join(self._out)
 
 
 class _Renderer(HTMLParser):
@@ -196,16 +314,69 @@ class _Renderer(HTMLParser):
     # ------------------------------------------------------------- plumbing
 
     def _flush(self) -> None:
+        if any(bundle["cell"] is not None for bundle in self._table_stack):
+            # An open cell owns the inline buffer: flushing here would spill the
+            # cell's text into the document body as its own paragraph.
+            return
         text = _clean_ws("".join(self.buf)).strip()
         self.buf.clear()
         if text:
             self.out.append(text)
 
-    def _flush_list(self) -> None:
+    def _current_item_text(self) -> str:
+        """The innermost item's inline text, without consuming the buffer.
+
+        Taking a *slice* rather than moving list objects is what keeps inline
+        markup paired with its text: an inline element appends its opening
+        delimiter to ``self.buf``, and if the text before it has been moved into
+        a different list, the delimiter is left dangling and the item loses its
+        own words.
+        """
+        if not self._lists:
+            return ""
+        frame = self._lists[-1]
+        if frame["current"] is None:
+            return ""
+        return "".join(self.buf[frame["current"]:])
+
+    def _take_current_item_text(self) -> str:
+        """As :meth:`_current_item_text`, but drops the raw text from the buffer.
+
+        The buffer keeps its inline delimiters, so a span still open across this
+        boundary can still be closed correctly later.
+        """
+        text = self._current_item_text()
+        if self._lists and self._lists[-1]["current"] is not None:
+            start = self._lists[-1]["current"]
+            del self.buf[start:]
+            self._lists[-1]["current"] = len(self.buf)
+        return text
+
+    def _enter_list_item(self, frame: dict) -> None:
+        """Open a ``<li>``: close the previous item, then start recording."""
+        if frame["current"] is not None:
+            text = _clean_ws("".join(self.buf[frame["current"]:])).strip()
+            del self.buf[frame["current"]:]
+            if text:
+                frame["items"].append([text])
+        frame["current"] = len(self.buf)
+
+    def _exit_list_item(self, frame: dict) -> None:
+        """Close a ``<li>``: record its inline text."""
+        if frame["current"] is not None:
+            text = _clean_ws("".join(self.buf[frame["current"]:])).strip()
+            del self.buf[frame["current"]:]
+            if text:
+                frame["items"].append([text])
+            frame["current"] = None
+
+    def _flush_list(self, flush_inline: bool = True) -> None:
         """Close the innermost open list, if any.
 
-        Called when a block element interrupts a list -- an inline ``<li>`` that
-        opens a nested ``<ul>`` must not be emitted after its own children.
+        ``flush_inline=False`` is used while unwinding a nested list: the buffer
+        from the parent item's start position belongs to the parent item, whose
+        own ``</li>`` records it.  Consuming it here would emit the parent's text
+        after its children.
         """
         if not self._lists:
             return
@@ -214,26 +385,37 @@ class _Renderer(HTMLParser):
         # silently flatten every nested list.
         depth = len(self._lists) - 1
         bundle = self._lists.pop()
-        if bundle["current"] is not None:
-            bundle["items"].append(bundle["current"])
 
-        def normalize(item: list[str]) -> str:
+        if bundle["current"] is not None:
+            if flush_inline:
+                text = _clean_ws("".join(self.buf[bundle["current"]:])).strip()
+                del self.buf[bundle["current"]:]
+                if text:
+                    bundle["items"].append([text])
+            bundle["current"] = None
+
+        def flatten(item: list) -> str:
+            # Items are nested lists: an item holds its own text plus, appended
+            # after it, the rendered blocks of any nested list.
+            return "".join(flatten(part) if isinstance(part, list) else part for part in item)
+
+        def normalize(item: list) -> str:
             # Nested-list structure is carried by newlines *and* by the leading
             # indentation, so protect the indentation from the whitespace
             # collapser -- otherwise "    - child" collapses to " - child" and
             # the nesting is silently lost.
-            lines = "".join(item).split("\n")
+            lines = flatten(item).split("\n")
             protected = []
             for line in lines:
                 stripped = line.lstrip(" ")
-                depth = len(line) - len(stripped)
-                protected.append("\x01" * depth + stripped)
+                indent_width = len(line) - len(stripped)
+                protected.append("\x01" * indent_width + stripped)
             joined = "\x00".join(protected)
             collapsed = _clean_ws(joined)
             collapsed = collapsed.replace("\x00", "\n").replace("\x01", " ")
             return collapsed.rstrip()
 
-        items = [normalize(i) for i in bundle["items"] if "".join(i).strip()]
+        items = [normalize(i) for i in bundle["items"] if flatten(i).strip()]
         if not items:
             return
 
@@ -247,12 +429,12 @@ class _Renderer(HTMLParser):
             return
 
         # A nested list belongs to the parent's last item: attach it there so the
-        # parent's own text comes first and the children follow it.
+        # parent's own text comes first and the children follow it.  The parent's
+        # text was already appended to ``items`` when the nested ``<ul>`` opened,
+        # so appending the indented block preserves that order.
         indented = "\n".join(indent + line for line in body.split("\n"))
-        if self._lists and self._lists[-1]["current"] is not None:
-            parent = self._lists[-1]["current"]
-            parent[-1] = parent[-1].rstrip()
-            parent.append("\n" + indented)
+        if self._lists and self._lists[-1]["items"]:
+            self._lists[-1]["items"][-1].append(["\n" + indented])
             return
         self._emit_block(indented)
 
@@ -339,11 +521,16 @@ class _Renderer(HTMLParser):
             # too, and would otherwise be flushed away with no marker emitted.
             self._flush_list()
             self._emit_block("---")
+        elif tag == "br":
+            # A markdown hard break is "two spaces then a newline", but the line
+            # is about to be whitespace-normalised, which would eat those
+            # spaces.  A sentinel survives normalisation and is converted back
+            # in result(); a bare newline would be a *soft* break, which
+            # renderers collapse into one line, silently losing the structure.
+            self.buf.append(HARD_BREAK)
         elif tag == "p" or tag in BLOCK_TAGS:
             self._flush_list()
             self._flush()
-        elif tag == "br":
-            self.buf.append("  \n")
         elif tag in ("strong", "b"):
             self.buf.append("**")
         elif tag in ("em", "i"):
@@ -364,14 +551,22 @@ class _Renderer(HTMLParser):
                     self.buf.append(md.image(attrib.get("alt", ""), src, attrib.get("title", "")))
                     self._images += 1
         elif tag in ("ul", "ol"):
-            self._flush()
+            if self._lists and self._lists[-1]["current"] is not None:
+                # Text written before a nested list belongs to the parent item.
+                # Close that item off so the nested list's own content cannot be
+                # mistaken for the parent's, then let the nested list record.
+                frame = self._lists[-1]
+                text = _clean_ws("".join(self.buf[frame["current"]:])).strip()
+                del self.buf[frame["current"]:]
+                if text:
+                    frame["items"].append([text])
+                frame["current"] = None
+            else:
+                self._flush()
             self._lists.append({"ordered": tag == "ol", "items": [], "current": None})
         elif tag == "li":
-            self._flush()
             if self._lists:
-                if self._lists[-1]["current"] is not None:
-                    self._lists[-1]["items"].append(self._lists[-1]["current"])
-                self._lists[-1]["current"] = []
+                self._enter_list_item(self._lists[-1])
         elif tag == "blockquote":
             self._flush_list()
             self._flush()
@@ -386,7 +581,11 @@ class _Renderer(HTMLParser):
                 self._table_stack[-1]["row"] = []
         elif tag in ("td", "th"):
             if self._table_stack:
-                self._table_stack[-1]["cell"] = []
+                # A cell records a position into the inline buffer, for the same
+                # reason a list item does: `<code>`/`<b>`/`<a>` append a
+                # delimiter *and* their own text to that single buffer, and
+                # slicing from a position is what keeps the two together.
+                self._table_stack[-1]["cell"] = len(self.buf)
                 if tag == "th":
                     self._table_stack[-1]["header"] = True
 
@@ -438,7 +637,14 @@ class _Renderer(HTMLParser):
             else:
                 inner = _clean_ws(raw).strip()
                 ticks = "``" if "`" in inner else "`"
-                self.buf.append(f"{ticks}{inner}{ticks}")
+                span = f"{ticks}{inner}{ticks}"
+                # The open tag appended a placeholder backtick; replace that
+                # placeholder with the finished span instead of appending a
+                # second backtick beside it.
+                if self.buf and self.buf[-1] == "`":
+                    self.buf[-1] = span
+                else:
+                    self.buf.append(span)
         elif tag == "a":
             # The stack holds a boolean: did this <a> open a "[" label?
             if self._link_stack and self._link_stack.pop():
@@ -448,11 +654,12 @@ class _Renderer(HTMLParser):
                 self.buf.append(")")
                 self._links += 1
         elif tag in ("ul", "ol"):
-            self._flush_list()
+            # Unwinding: the buffer holds the parent item's text, which the
+            # parent's own </li> will fold in.
+            self._flush_list(flush_inline=False)
         elif tag == "li":
-            if self._lists and self._lists[-1]["current"] is not None:
-                self._lists[-1]["items"].append(self._lists[-1]["current"])
-                self._lists[-1]["current"] = None
+            if self._lists:
+                self._exit_list_item(self._lists[-1])
         elif tag == "blockquote":
             self._quote_depth = max(0, self._quote_depth - 1)
             text = self._inline()
@@ -461,10 +668,16 @@ class _Renderer(HTMLParser):
                 self._emit(md.blockquote(text))
         elif tag in ("td", "th"):
             if self._table_stack and self._table_stack[-1]["cell"] is not None:
-                cell = _clean_ws("".join(self._table_stack[-1]["cell"])).strip()
-                self._table_stack[-1]["cell"] = None
-                if self._table_stack[-1]["row"] is not None:
-                    self._table_stack[-1]["row"].append(cell)
+                bundle = self._table_stack[-1]
+                start = bundle["cell"]
+                cell = _clean_ws("".join(self.buf[start:])).strip()
+                del self.buf[start:]
+                bundle["cell"] = None
+                # A pipe-table row cannot contain a line break, so a <br> in a
+                # cell becomes a space rather than a hard-break sentinel that
+                # would be expanded after the table was already rendered.
+                if bundle["row"] is not None:
+                    bundle["row"].append(cell.replace(HARD_BREAK, " "))
         elif tag == "tr":
             if self._table_stack and self._table_stack[-1]["row"] is not None:
                 row = self._table_stack[-1]["row"]
@@ -475,8 +688,16 @@ class _Renderer(HTMLParser):
             if self._table_stack:
                 bundle = self._table_stack.pop()
                 rows = [r for r in bundle["rows"] if any(c for c in r)]
-                if rows:
-                    self._emit(md.table(rows, header=bundle["header"] or True))
+                if not rows:
+                    return
+                if bundle["header"]:
+                    self._emit(md.table(rows, header=True))
+                else:
+                    # No <th> anywhere, so the first row is data, not a header.
+                    # Promoting it would mislabel real values as column names;
+                    # an explicit placeholder keeps the alignment honest.
+                    table = md.table(rows, header=False)
+                    self._emit(table.replace("|  |", "| (no header) |", 1))
         elif tag in BLOCK_TAGS:
             self._flush()
 
@@ -489,12 +710,9 @@ class _Renderer(HTMLParser):
         if self._code_depth:
             self._code_buf.append(data)
             return
-        if self._table_stack and self._table_stack[-1]["cell"] is not None:
-            self._table_stack[-1]["cell"].append(data)
-            return
-        if self._lists and self._lists[-1]["current"] is not None:
-            self._lists[-1]["current"].append(data)
-            return
+        # List items and table cells record a position in this buffer rather
+        # than a list of their own, so inline delimiters stay paired with their
+        # text -- and so text inside a cell cannot escape the row.
         self.buf.append(data)
 
     @property
@@ -532,6 +750,10 @@ class _Renderer(HTMLParser):
                 self.out.append(md.table(rows))
 
         body = "\n\n".join(f for f in self.out if f.strip())
+        # ``<br>`` sentinels survived whitespace normalisation; turn them into
+        # real markdown hard breaks (two trailing spaces) now that no further
+        # whitespace collapsing will happen.
+        body = body.replace(HARD_BREAK, "  \n")
         body = re.sub(r"\n{3,}", "\n\n", body).strip()
         stats = {
             "headings": self._headings,
@@ -542,42 +764,114 @@ class _Renderer(HTMLParser):
         return body, stats
 
 
+#: Tags that are never content, whatever engine is used.  ``head`` goes too: it
+#: holds ``<title>``/``<meta>``, and markdownify would otherwise print the
+#: document title as body text.
+_NOISE_SUBTREE_RE = re.compile(
+    r"<(head|title|script|style|noscript|template|svg|canvas|iframe)\b[^>]*>.*?</\1\s*>",
+    re.S | re.I,
+)
+#: ``<pre>`` blocks, pulled out before the third-party engine runs so that their
+#: fence language (which markdownify discards) and their literal whitespace
+#: (which it reflows) survive.
+_PRE_RE = re.compile(r"<pre\b[^>]*>(.*?)</pre\s*>", re.S | re.I)
+_FENCE_LANG_RE = re.compile(
+    r"""class\s*=\s*(?:"[^"]*?|'[^']*?|)(?:language|lang|highlight|brush|source)[-_:]([A-Za-z0-9+#._-]+)""",
+    re.I,
+)
+_CODE_SLOT = "TOMDCODESLOT"
+
+
+def _strip_noise(html: str) -> str:
+    """Remove subtrees that can never carry markdown content."""
+    previous = None
+    while previous != html:
+        previous = html
+        html = _NOISE_SUBTREE_RE.sub("", html)
+    # Unclosed <head>/<title> (the regex needs a closing tag) still must go.
+    return re.sub(r"</?(?:head|title)\b[^>]*>", "", html, flags=re.I)
+
+
+def _protect_pre_blocks(html: str) -> tuple[str, list[str]]:
+    """Swap every ``<pre>`` for a slot; return the fences to put back later."""
+    fences: list[str] = []
+
+    def swap(match: re.Match) -> str:
+        inner = match.group(1)
+        code_tag = re.search(r"<code\b[^>]*>", inner, re.I)
+        lang = ""
+        if code_tag:
+            lang_match = _FENCE_LANG_RE.search(code_tag.group(0))
+            if lang_match:
+                lang = lang_match.group(1)
+        text = unescape(re.sub(r"<[^>]+>", "", inner))
+        text = text.replace("\r\n", "\n").replace("\r", "\n").strip("\n")
+        fences.append(md.fence(text, lang))
+        return f"<p>{_CODE_SLOT}{len(fences) - 1}</p>"
+
+    return _PRE_RE.sub(swap, html), fences
+
+
+def _markdownify_engine(html: str, *, keep_links: bool, keep_images: bool,
+                        drop_chrome: bool) -> str:
+    """Render with markdownify, plus the fixes it needs to be usable here."""
+    try:
+        from markdownify import markdownify as _md  # type: ignore
+    except ImportError as exc:  # pragma: no cover - exercised via monkeypatch
+        raise RuntimeError(
+            "markdownify is not installed; install it with "
+            '`pip install "tomd[recommended]"`, or use --html-engine builtin'
+        ) from exc
+
+    stripped = _strip_noise(html)
+    if drop_chrome:
+        # A regex that deletes every <header>/<nav> also deletes the <h1> a page
+        # keeps in its header, so ask the same content-driven question the
+        # built-in renderer asks.
+        chrome = _ChromeFilter()
+        chrome.feed(stripped)
+        chrome.close()
+        stripped = chrome.result()
+    stripped, fences = _protect_pre_blocks(stripped)
+
+    # ``strip`` drops the tag but keeps its text, which is what --no-links and
+    # --no-images mean everywhere else in the tool.
+    strip = [tag for tag, keep in (("a", keep_links), ("img", keep_images)) if not keep]
+    body = _md(stripped, heading_style="ATX", bullets="-", strip=strip or None)
+    for index, fenced in enumerate(fences):
+        slot = re.compile(rf"(?m)^[ \t]*{_CODE_SLOT}{index}[ \t]*$")
+        if slot.search(body):
+            body = slot.sub(lambda _m, _f=fenced: _f, body)
+        else:  # pragma: no cover - only if markdownify rewrote the slot line
+            body = body.replace(f"{_CODE_SLOT}{index}", fenced)
+    return re.sub(r"\n{3,}", "\n\n", body).strip()
+
+
 def html_to_markdown(html: str, *, engine: str = "auto", base_url: str = "",
                      keep_links: bool = True, keep_images: bool = True,
                      drop_chrome: bool = True) -> tuple[str, dict, str]:
-    """Convert an HTML string. Returns ``(markdown, stats, engine_used)``."""
-    if engine in ("auto", "markdownify"):
-        try:
-            from markdownify import markdownify as _md  # type: ignore
+    """Convert an HTML string. Returns ``(markdown, stats, engine_used)``.
 
-            stripped = html
-            if drop_chrome:
-                stripped = re.sub(
-                    r"<(script|style|noscript|template|svg|nav|footer|header|iframe)\b.*?</\1>",
-                    "",
-                    html,
-                    flags=re.S | re.I,
-                )
-            body = _md(
-                stripped,
-                heading_style="ATX",
-                bullets="-",
-                strip=["img"] if not keep_images else None,
-            )
-            body = re.sub(r"\n{3,}", "\n\n", body).strip()
-            stats = {
-                "headings": len(re.findall(r"^#{1,6}\s+\S", body, re.M)),
-                "tables": body.count("| ---"),
-                "links": len(re.findall(r"\]\(", body)),
-                "images": len(re.findall(r"!\[", body)),
-            }
-            return body, stats, "markdownify"
-        except ImportError:
-            if engine == "markdownify":
-                raise
-        except Exception:
-            if engine == "markdownify":
-                raise
+    ``auto`` and ``builtin`` both use the built-in renderer: it is always
+    available, and pinning ``auto`` to it keeps output identical whether or not
+    markdownify happens to be installed.  ``markdownify`` is an explicit opt-in.
+    """
+    if engine not in ("auto", "builtin", "markdownify"):
+        raise ValueError(
+            f"unknown HTML engine {engine!r}; expected 'auto', 'builtin' or 'markdownify'"
+        )
+
+    if engine == "markdownify":
+        body = _markdownify_engine(
+            html, keep_links=keep_links, keep_images=keep_images, drop_chrome=drop_chrome
+        )
+        stats = {
+            "headings": len(re.findall(r"^#{1,6}\s+\S", body, re.M)),
+            "tables": body.count("| ---"),
+            "links": len(re.findall(r"\]\(", body)),
+            "images": len(re.findall(r"!\[", body)),
+        }
+        return body, stats, "markdownify"
 
     # Pre-pass: decide which <header>/<nav>/<footer> elements are content.
     keep_chrome: set[int] = set()
