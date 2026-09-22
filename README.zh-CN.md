@@ -1,5 +1,9 @@
 # tomd
 
+[![tests](https://github.com/buguoshixc/tomd/actions/workflows/tests.yml/badge.svg)](https://github.com/buguoshixc/tomd/actions/workflows/tests.yml)
+[![licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+[![python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+
 把（几乎）任何文件转换成 Markdown，并且**如实说明发生了什么**。
 
 `tomd` 是一个本地优先的文档转换工具，围绕一条原则构建：**绝不产出看起来合理、实际却悄悄出错的结果。** 每一次转换都附带一份报告，说明用了哪个引擎、恢复出了什么、哪些地方是近似的、丢了什么、拒绝了什么。

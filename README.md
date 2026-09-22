@@ -1,5 +1,9 @@
 # tomd
 
+[![tests](https://github.com/buguoshixc/tomd/actions/workflows/tests.yml/badge.svg)](https://github.com/buguoshixc/tomd/actions/workflows/tests.yml)
+[![licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+[![python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+
 Convert (almost) any file to Markdown, and be honest about what happened.
 
 **中文文档：[README.zh-CN.md](README.zh-CN.md)**
