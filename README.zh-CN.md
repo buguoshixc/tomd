@@ -70,8 +70,9 @@ pip install -e ".[dev]"             # 外加 pytest
 ## 使用
 
 ```bash
-tomd report.pdf                      # 转换并输出到 stdout
-tomd report.pdf -o report.md         # 转换成文件
+tomd report.pdf                      # 转单个文件 → 源文件旁的 .md/report.md
+tomd report.pdf -o report.md         # ……或者写到你指定的文件名
+tomd report.pdf --stdout             # 只打印 Markdown，不落盘
 tomd ./docs --out ./out              # 转换整棵目录树，保持目录结构
 tomd ./docs --out ./out --workers 8  # ……并行转换
 tomd paper.pdf --stdout --no-report --no-front-matter   # 喂给 LLM 的干净输出
@@ -81,6 +82,9 @@ tomd page.html --html-engine markdownify   # 显式改用第三方渲染器
 tomd --formats                       # 支持哪些格式、分别由谁负责
 tomd --server                        # 本地 Web 界面 http://127.0.0.1:8765
 ```
+
+已存在的输出会**跳过**，所以对同一棵树再跑一次几乎不花时间；要重刷加 `--overwrite`。
+`--report-json` 会额外在每个结果旁写一份机器可读的 `<输出名>.json`。
 
 HTML 有两套渲染器。默认（`auto` 与 `builtin` 同义）走**内置渲染器**：它永远可用，
 而且输出不应该因为环境里恰好装了什么包而变化；`markdownify` 需要显式开启，

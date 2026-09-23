@@ -76,8 +76,9 @@ says exactly what was lost.
 ## Use
 
 ```bash
-tomd report.pdf                      # convert, print to stdout
-tomd report.pdf -o report.md         # convert to a file
+tomd report.pdf                      # convert one file -> .md/report.md next to it
+tomd report.pdf -o report.md         # ... or to a name you choose
+tomd report.pdf --stdout             # print the markdown instead of writing
 tomd ./docs --out ./out              # convert a tree, mirroring the structure
 tomd ./docs --out ./out --workers 8  # ... in parallel
 tomd paper.pdf --stdout --no-report --no-front-matter   # clean output for an LLM
@@ -87,6 +88,10 @@ tomd page.html --html-engine markdownify   # opt into the third-party renderer
 tomd --formats                       # what is supported, and by what
 tomd --server                        # local web UI on http://127.0.0.1:8765
 ```
+
+Existing outputs are skipped, so a second run over the same tree is cheap; pass
+`--overwrite` to refresh them. `--report-json` additionally writes a
+machine-readable `<output>.json` next to each result.
 
 HTML has two renderers. The built-in one is the default (`auto` and `builtin`
 both mean it) because it is always available and because output should not

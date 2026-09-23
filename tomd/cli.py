@@ -2,9 +2,12 @@
 
 Three shapes of use, because those are the three shapes people actually have:
 
-1. one file -> stdout (``tomd report.pdf``),
-2. one file -> a file (``tomd report.pdf -o report.md``),
+1. one file -> a file next to the source, in ``.md/`` (``tomd report.pdf``),
+2. one file -> a file you name (``tomd report.pdf -o report.md``),
 3. a whole tree -> a mirrored tree (``tomd ./docs --out ./out``).
+
+``--stdout`` prints the markdown instead of writing anything, which is what you
+want when piping into another tool.
 
 Exit codes are meaningful so it can be used in a pipeline:
 ``0`` all good, ``1`` completed with warnings/failures, ``2`` usage error.
@@ -52,8 +55,9 @@ def _force_utf8_streams() -> None:
 
 _EPILOG = """\
 examples:
-  tomd report.pdf                      convert one file, print to stdout
-  tomd report.pdf -o report.md         convert one file to a file
+  tomd report.pdf                      convert one file (writes .md/report.md)
+  tomd report.pdf -o report.md         convert one file to a name you choose
+  tomd report.pdf --stdout             print the markdown, write nothing
   tomd ./docs --out ./out              convert a whole tree, mirroring it
   tomd ./docs --out ./out --workers 8  same, in parallel
   tomd paper.pdf --no-report --no-front-matter   clean output for an LLM
@@ -66,8 +70,9 @@ examples:
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("output")
-    group.add_argument("-o", "--output", metavar="PATH",
-                       help="output file (single input) or output directory (many inputs)")
+    group.add_argument("-o", "--output", "--out", metavar="PATH",
+                       help="output file (single input) or output directory (many inputs); "
+                            "default: next to each source, in .md/")
     group.add_argument("--suffix", default=".md", help="output extension (default: .md)")
     group.add_argument("--overwrite", action="store_true", help="overwrite existing outputs")
     group.add_argument("--no-mirror", action="store_true",
